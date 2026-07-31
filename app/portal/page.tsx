@@ -2,20 +2,41 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, FileText, Inbox, LogOut, Sparkles } from "lucide-react";
 import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  FileText,
+  Inbox,
+  Landmark,
+  Loader2,
+  LogOut,
+  Receipt,
+  Sparkles,
+  UploadCloud,
+} from "lucide-react";
+import {
+  ApiError,
   CustomerProof,
   CustomerQuote,
+  Invoice,
+  InvoiceStatus,
+  PaymentInstructions,
   ProofStatus,
   QuoteStatus,
   approveMyProof,
   approveMyQuote,
   clearToken,
+  downloadProofFile,
+  getMyOrders,
   getMyProofs,
   getMyQuotes,
+  getOrderInvoice,
+  getPaymentInstructions,
   getToken,
   requestProofRevision,
   requestQuoteChanges,
+  uploadInvoiceReceipt,
   UnauthorizedError,
 } from "@/lib/api";
 
@@ -30,6 +51,13 @@ const PROOF_STATUS_STYLES: Record<ProofStatus, string> = {
   "Sent to Customer": "bg-blue-100 text-blue-700",
   Approved: "bg-green-100 text-green-700",
   "Revision Requested": "bg-amber-100 text-amber-700",
+};
+
+const INVOICE_STATUS_STYLES: Record<InvoiceStatus, string> = {
+  Draft: "bg-gray-100 text-gray-600",
+  Sent: "bg-blue-100 text-blue-700",
+  Paid: "bg-green-100 text-green-700",
+  Overdue: "bg-red-100 text-red-700",
 };
 
 function formatNumber(value: number): string {
@@ -53,6 +81,16 @@ function ProofStatusPill({ status }: { status: ProofStatus }) {
   return (
     <span
       className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${PROOF_STATUS_STYLES[status]}`}
+    >
+      {status}
+    </span>
+  );
+}
+
+function InvoiceStatusPill({ status }: { status: InvoiceStatus }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${INVOICE_STATUS_STYLES[status]}`}
     >
       {status}
     </span>
@@ -119,6 +157,18 @@ export default function PortalPage() {
   const [proofActionError, setProofActionError] = useState<Record<number, string>>({});
   const [proofCommentBoxId, setProofCommentBoxId] = useState<number | null>(null);
   const [proofCommentDrafts, setProofCommentDrafts] = useState<Record<number, string>>({});
+  const [viewingProofId, setViewingProofId] = useState<number | null>(null);
+  const [invoicesByOrder, setInvoicesByOrder] = useState<Record<number, Invoice | null>>({});
+  const [invoicesLoading, setInvoicesLoading] = useState(true);
+  const [invoicesError, setInvoicesError] = useState<string | null>(null);
+  const [paymentInstructions, setPaymentInstructions] = useState<PaymentInstructions | null>(null);
+  const [paymentInstructionsError, setPaymentInstructionsError] = useState<string | null>(null);
+  const [payOpenOrderId, setPayOpenOrderId] = useState<number | null>(null);
+  const [receiptDrafts, setReceiptDrafts] = useState<Record<number, File | null>>({});
+  const [receiptRefDrafts, setReceiptRefDrafts] = useState<Record<number, string>>({});
+  const [receiptInputKey, setReceiptInputKey] = useState<Record<number, number>>({});
+  const [uploadingReceiptId, setUploadingReceiptId] = useState<number | null>(null);
+  const [receiptError, setReceiptError] = useState<Record<number, string>>({});
 
   useEffect(() => {
     if (!getToken()) {
@@ -127,6 +177,8 @@ export default function PortalPage() {
     }
     loadQuotes();
     loadProofs();
+    loadInvoices();
+    loadPaymentInstructions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -161,6 +213,100 @@ export default function PortalPage() {
       setProofsError(err instanceof Error ? err.message : "We couldn't load your proofs. Please try again.");
     } finally {
       setProofsLoading(false);
+    }
+  }
+
+  async function loadInvoices() {
+    setInvoicesLoading(true);
+    setInvoicesError(null);
+    let orderIds: number[] = [];
+    try {
+      const orders = await getMyOrders();
+      orderIds = orders.map((o) => o.order_id);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        router.replace("/login");
+        return;
+      }
+      setInvoicesError(err instanceof Error ? err.message : "We couldn't load your orders.");
+      setInvoicesLoading(false);
+      return;
+    }
+
+    if (orderIds.length === 0) {
+      setInvoicesLoading(false);
+      return;
+    }
+
+    const results: Record<number, Invoice | null> = {};
+    for (const orderId of orderIds) {
+      try {
+        results[orderId] = await getOrderInvoice(orderId);
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          router.replace("/login");
+          return;
+        }
+        if (err instanceof ApiError && err.status === 404) {
+          results[orderId] = null;
+        } else {
+          setInvoicesError(err instanceof Error ? err.message : "We couldn't load your invoice.");
+        }
+      }
+    }
+    setInvoicesByOrder(results);
+    setInvoicesLoading(false);
+  }
+
+  async function loadPaymentInstructions() {
+    try {
+      const data = await getPaymentInstructions();
+      setPaymentInstructions(data);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        router.replace("/login");
+        return;
+      }
+      setPaymentInstructionsError(err instanceof Error ? err.message : "We couldn't load payment details.");
+    }
+  }
+
+  function togglePayInfo(orderId: number) {
+    setPayOpenOrderId((prev) => (prev === orderId ? null : orderId));
+  }
+
+  async function handleUploadReceipt(invoice: Invoice) {
+    const file = receiptDrafts[invoice.invoice_id];
+    const reference = (receiptRefDrafts[invoice.invoice_id] ?? "").trim();
+    if (!file) {
+      setReceiptError((prev) => ({ ...prev, [invoice.invoice_id]: "Choose a PDF or image file first." }));
+      return;
+    }
+    if (!reference) {
+      setReceiptError((prev) => ({
+        ...prev,
+        [invoice.invoice_id]: "Enter the payment reference/transaction ID you used.",
+      }));
+      return;
+    }
+    setUploadingReceiptId(invoice.invoice_id);
+    setReceiptError((prev) => ({ ...prev, [invoice.invoice_id]: "" }));
+    try {
+      const updated = await uploadInvoiceReceipt(invoice.invoice_id, file, reference);
+      setInvoicesByOrder((prev) => ({ ...prev, [invoice.order_id]: updated }));
+      setReceiptDrafts((prev) => ({ ...prev, [invoice.invoice_id]: null }));
+      setReceiptInputKey((prev) => ({ ...prev, [invoice.invoice_id]: (prev[invoice.invoice_id] ?? 0) + 1 }));
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        router.replace("/login");
+        return;
+      }
+      setReceiptError((prev) => ({
+        ...prev,
+        [invoice.invoice_id]: err instanceof Error ? err.message : "Could not upload the receipt.",
+      }));
+    } finally {
+      setUploadingReceiptId(null);
     }
   }
 
@@ -222,6 +368,27 @@ export default function PortalPage() {
       }));
     } finally {
       setActioningId(null);
+    }
+  }
+
+  async function handleViewProof(proofId: number) {
+    setViewingProofId(proofId);
+    setProofActionError((prev) => ({ ...prev, [proofId]: "" }));
+    try {
+      const blob = await downloadProofFile(proofId);
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        router.replace("/login");
+        return;
+      }
+      setProofActionError((prev) => ({
+        ...prev,
+        [proofId]: err instanceof Error ? err.message : "Could not load the proof file.",
+      }));
+    } finally {
+      setViewingProofId(null);
     }
   }
 
@@ -479,9 +646,18 @@ export default function PortalPage() {
                   </div>
 
                   {proof.file_url && (
-                    <p className="rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-sm text-gray-700">
-                      {proof.file_url}
-                    </p>
+                    <button
+                      onClick={() => handleViewProof(proof.proof_id)}
+                      disabled={viewingProofId === proof.proof_id}
+                      className="flex w-full items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm font-medium text-indigo-600 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {viewingProofId === proof.proof_id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <FileText className="h-4 w-4" />
+                      )}
+                      View Proof (PDF)
+                    </button>
                   )}
 
                   {proof.status === "Revision Requested" && proof.customer_feedback && (
@@ -489,10 +665,6 @@ export default function PortalPage() {
                       <p className="font-medium">You requested:</p>
                       <p className="mt-1">{proof.customer_feedback}</p>
                     </div>
-                  )}
-
-                  {proof.status === "Uploaded" && (
-                    <p className="mt-5 text-sm text-gray-400">This proof hasn&apos;t been sent to you yet.</p>
                   )}
 
                   {proof.status === "Approved" && (
@@ -555,6 +727,191 @@ export default function PortalPage() {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {(invoicesLoading || invoicesError || Object.keys(invoicesByOrder).length > 0) && (
+          <div className="mt-12">
+            <div className="mb-8">
+              <h2 className="text-3xl font-bold tracking-tight text-gray-900">Your Invoice</h2>
+              <p className="mt-2 text-base text-gray-500">Track invoice status for your order.</p>
+            </div>
+
+            {invoicesError && (
+              <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {invoicesError}
+              </div>
+            )}
+
+            {invoicesLoading && <SkeletonCards />}
+
+            {!invoicesLoading && (
+              <div className="space-y-6">
+                {Object.entries(invoicesByOrder).map(([orderId, invoice]) =>
+                  invoice ? (
+                    <div key={orderId} className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm sm:p-8">
+                      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-lg font-semibold text-gray-900">{invoice.company_name}</p>
+                          <p className="mt-0.5 text-sm text-gray-400">Order #{invoice.order_id}</p>
+                        </div>
+                        <InvoiceStatusPill status={invoice.status} />
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-4">
+                        <p className="text-sm text-gray-500">
+                          Due {invoice.due_date ? formatDate(invoice.due_date) : "—"}
+                        </p>
+                        <p className="text-xl font-bold text-gray-900">{formatNumber(invoice.amount)}</p>
+                      </div>
+                      {invoice.status === "Paid" && invoice.paid_at && (
+                        <div className="mt-5 flex items-center gap-2 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm font-medium text-green-700">
+                          <CheckCircle2 className="h-5 w-5" /> Paid on {formatDate(invoice.paid_at)}. Thank you!
+                        </div>
+                      )}
+
+                      {(invoice.status === "Sent" || invoice.status === "Overdue") && (
+                        <div className="mt-5">
+                          <button
+                            onClick={() => togglePayInfo(invoice.order_id)}
+                            className="flex w-full items-center justify-between gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                          >
+                            <span className="flex items-center gap-2">
+                              <Landmark className="h-4 w-4" /> How to Pay
+                            </span>
+                            {payOpenOrderId === invoice.order_id ? (
+                              <ChevronUp className="h-4 w-4" />
+                            ) : (
+                              <ChevronDown className="h-4 w-4" />
+                            )}
+                          </button>
+
+                          {payOpenOrderId === invoice.order_id && (
+                            <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50 px-4 py-4 text-sm text-gray-700">
+                              {paymentInstructionsError && (
+                                <p className="text-red-600">{paymentInstructionsError}</p>
+                              )}
+                              {!paymentInstructionsError && !paymentInstructions && (
+                                <p className="text-gray-400">Loading payment details…</p>
+                              )}
+                              {paymentInstructions && (
+                                <>
+                                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                                    <div>
+                                      <p className="text-xs uppercase tracking-wide text-gray-400">Bank</p>
+                                      <p className="font-medium text-gray-900">{paymentInstructions.bank_name}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-xs uppercase tracking-wide text-gray-400">Account Title</p>
+                                      <p className="font-medium text-gray-900">
+                                        {paymentInstructions.account_title}
+                                      </p>
+                                    </div>
+                                    <div>
+                                      <p className="text-xs uppercase tracking-wide text-gray-400">
+                                        Account Number
+                                      </p>
+                                      <p className="font-medium text-gray-900">
+                                        {paymentInstructions.account_number}
+                                      </p>
+                                    </div>
+                                    <div>
+                                      <p className="text-xs uppercase tracking-wide text-gray-400">IBAN</p>
+                                      <p className="font-medium text-gray-900">{paymentInstructions.iban}</p>
+                                    </div>
+                                  </div>
+                                  <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs font-medium text-amber-800">
+                                    Please include{" "}
+                                    <span className="font-semibold">Invoice #{invoice.invoice_id}</span> as your
+                                    payment reference so we can match your payment. {paymentInstructions.note}
+                                  </p>
+                                </>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="mt-4">
+                            {invoice.receipt_file_url ? (
+                              <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                                <p className="flex items-center gap-2 font-medium">
+                                  <CheckCircle2 className="h-5 w-5" /> Payment proof submitted — awaiting
+                                  confirmation from our finance team.
+                                </p>
+                                {invoice.customer_payment_reference && (
+                                  <p className="mt-1.5 pl-7 text-blue-600">
+                                    Reference submitted:{" "}
+                                    <span className="font-semibold">{invoice.customer_payment_reference}</span>
+                                  </p>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-4">
+                                <p className="mb-2 text-sm font-medium text-gray-700">I&apos;ve Paid — Submit Proof</p>
+                                <div className="space-y-2">
+                                  <input
+                                    type="text"
+                                    value={receiptRefDrafts[invoice.invoice_id] ?? ""}
+                                    onChange={(e) =>
+                                      setReceiptRefDrafts((prev) => ({
+                                        ...prev,
+                                        [invoice.invoice_id]: e.target.value,
+                                      }))
+                                    }
+                                    placeholder="Your payment reference/transaction ID"
+                                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none transition placeholder:text-gray-400 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                                  />
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <input
+                                      key={receiptInputKey[invoice.invoice_id] ?? 0}
+                                      type="file"
+                                      accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                                      onChange={(e) =>
+                                        setReceiptDrafts((prev) => ({
+                                          ...prev,
+                                          [invoice.invoice_id]: e.target.files?.[0] ?? null,
+                                        }))
+                                      }
+                                      className="min-w-[200px] flex-1 cursor-pointer text-xs text-gray-500 file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-gray-200 file:px-3 file:py-2 file:text-xs file:font-medium file:text-gray-700 hover:file:bg-gray-300"
+                                    />
+                                    <button
+                                      onClick={() => handleUploadReceipt(invoice)}
+                                      disabled={
+                                        uploadingReceiptId === invoice.invoice_id ||
+                                        !receiptDrafts[invoice.invoice_id] ||
+                                        !(receiptRefDrafts[invoice.invoice_id] ?? "").trim()
+                                      }
+                                      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {uploadingReceiptId === invoice.invoice_id ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                      ) : (
+                                        <UploadCloud className="h-4 w-4" />
+                                      )}
+                                      Submit Proof
+                                    </button>
+                                  </div>
+                                </div>
+                                <p className="mt-2 text-xs text-gray-400">PDF, JPG, or PNG — max 10MB.</p>
+                                {receiptError[invoice.invoice_id] && (
+                                  <p className="mt-2 text-xs text-red-600">{receiptError[invoice.invoice_id]}</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div
+                      key={orderId}
+                      className="flex items-center gap-3 rounded-2xl border border-gray-200 bg-white px-6 py-5 text-sm text-gray-500 shadow-sm"
+                    >
+                      <Receipt className="h-5 w-5 text-gray-300" />
+                      Invoice not yet issued for this order.
+                    </div>
+                  )
+                )}
+              </div>
+            )}
           </div>
         )}
       </main>

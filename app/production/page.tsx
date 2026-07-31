@@ -2,13 +2,14 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ChevronDown, ChevronUp, Loader2, LogOut, Send, Sparkles, UploadCloud } from "lucide-react";
+import { ArrowRight, ChevronDown, ChevronUp, FileText, Loader2, LogOut, Send, Sparkles, UploadCloud } from "lucide-react";
 import {
   OrderSummary,
   PRODUCTION_STAGES,
   ProductionStage,
   Proof,
   clearToken,
+  downloadProofFile,
   getOrderProofs,
   getOrders,
   getRoleFromToken,
@@ -37,8 +38,8 @@ const PROOF_STATUS_STYLES: Record<string, string> = {
 
 const TABLE_COLUMNS = ["Company", "Stage", "Created", "Actions"];
 
-const inputClass =
-  "w-full rounded-lg border border-transparent bg-white/5 px-3 py-2 text-sm text-slate-100 outline-none transition-all duration-200 placeholder:text-slate-500 focus:border-indigo-500 focus:bg-white/10 focus:ring-4 focus:ring-indigo-500/20";
+const fileInputClass =
+  "min-w-[240px] flex-1 cursor-pointer text-xs text-slate-400 file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-xs file:font-medium file:text-slate-300 hover:file:bg-slate-700";
 
 function StageBadge({ stage }: { stage: ProductionStage }) {
   return (
@@ -87,9 +88,11 @@ export default function ProductionPage() {
   const [expandedOrderId, setExpandedOrderId] = useState<number | null>(null);
   const [proofsByOrder, setProofsByOrder] = useState<Record<number, Proof[]>>({});
   const [proofsLoadingId, setProofsLoadingId] = useState<number | null>(null);
-  const [uploadDrafts, setUploadDrafts] = useState<Record<number, string>>({});
+  const [uploadDrafts, setUploadDrafts] = useState<Record<number, File | null>>({});
+  const [uploadInputKey, setUploadInputKey] = useState<Record<number, number>>({});
   const [uploadingOrderId, setUploadingOrderId] = useState<number | null>(null);
   const [sendingProofId, setSendingProofId] = useState<number | null>(null);
+  const [viewingProofId, setViewingProofId] = useState<number | null>(null);
   const [rowError, setRowError] = useState<Record<number, string>>({});
 
   useEffect(() => {
@@ -186,17 +189,18 @@ export default function ProductionPage() {
   }
 
   async function handleUploadProof(orderId: number) {
-    const fileUrl = (uploadDrafts[orderId] ?? "").trim();
-    if (!fileUrl) {
-      setRowError((prev) => ({ ...prev, [orderId]: "Enter a file URL/path before uploading." }));
+    const file = uploadDrafts[orderId];
+    if (!file) {
+      setRowError((prev) => ({ ...prev, [orderId]: "Choose a PDF file before uploading." }));
       return;
     }
     setUploadingOrderId(orderId);
     setRowError((prev) => ({ ...prev, [orderId]: "" }));
     try {
-      const proof = await uploadProof(orderId, fileUrl);
+      const proof = await uploadProof(orderId, file);
       setProofsByOrder((prev) => ({ ...prev, [orderId]: [...(prev[orderId] ?? []), proof] }));
-      setUploadDrafts((prev) => ({ ...prev, [orderId]: "" }));
+      setUploadDrafts((prev) => ({ ...prev, [orderId]: null }));
+      setUploadInputKey((prev) => ({ ...prev, [orderId]: (prev[orderId] ?? 0) + 1 }));
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         router.replace("/login");
@@ -208,6 +212,27 @@ export default function ProductionPage() {
       }));
     } finally {
       setUploadingOrderId(null);
+    }
+  }
+
+  async function handleViewProof(proofId: number, orderId: number) {
+    setViewingProofId(proofId);
+    setRowError((prev) => ({ ...prev, [orderId]: "" }));
+    try {
+      const blob = await downloadProofFile(proofId);
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        router.replace("/login");
+        return;
+      }
+      setRowError((prev) => ({
+        ...prev,
+        [orderId]: err instanceof Error ? err.message : "Failed to load the proof file.",
+      }));
+    } finally {
+      setViewingProofId(null);
     }
   }
 
@@ -403,7 +428,18 @@ export default function ProductionPage() {
                                             <ProofStatusBadge status={proof.status} />
                                           </div>
                                           {proof.file_url && (
-                                            <p className="mt-1 text-xs text-slate-400">{proof.file_url}</p>
+                                            <button
+                                              onClick={() => handleViewProof(proof.proof_id, order.order_id)}
+                                              disabled={viewingProofId === proof.proof_id}
+                                              className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-indigo-400 transition hover:text-indigo-300 disabled:cursor-not-allowed disabled:opacity-60"
+                                            >
+                                              {viewingProofId === proof.proof_id ? (
+                                                <Loader2 className="h-3 w-3 animate-spin" />
+                                              ) : (
+                                                <FileText className="h-3 w-3" />
+                                              )}
+                                              View Proof (PDF)
+                                            </button>
                                           )}
                                           {proof.customer_feedback && (
                                             <p className="mt-1 max-w-md text-xs text-amber-300">
@@ -432,16 +468,20 @@ export default function ProductionPage() {
 
                                 <div className="flex flex-wrap items-center gap-2">
                                   <input
-                                    value={uploadDrafts[order.order_id] ?? ""}
+                                    key={uploadInputKey[order.order_id] ?? 0}
+                                    type="file"
+                                    accept=".pdf,application/pdf"
                                     onChange={(e) =>
-                                      setUploadDrafts((prev) => ({ ...prev, [order.order_id]: e.target.value }))
+                                      setUploadDrafts((prev) => ({
+                                        ...prev,
+                                        [order.order_id]: e.target.files?.[0] ?? null,
+                                      }))
                                     }
-                                    placeholder="File URL or path for new proof version"
-                                    className={`${inputClass} min-w-[240px] flex-1`}
+                                    className={fileInputClass}
                                   />
                                   <button
                                     onClick={() => handleUploadProof(order.order_id)}
-                                    disabled={uploadingOrderId === order.order_id}
+                                    disabled={uploadingOrderId === order.order_id || !uploadDrafts[order.order_id]}
                                     className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                                   >
                                     {uploadingOrderId === order.order_id ? (
@@ -449,9 +489,10 @@ export default function ProductionPage() {
                                     ) : (
                                       <UploadCloud className="h-3.5 w-3.5" />
                                     )}
-                                    Upload Proof
+                                    {uploadingOrderId === order.order_id ? "Uploading…" : "Upload Proof"}
                                   </button>
                                 </div>
+                                <p className="mt-2 text-xs text-slate-500">PDF only, max 10MB.</p>
                               </div>
                             </td>
                           </tr>

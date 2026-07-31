@@ -23,11 +23,13 @@ import {
   LeadUrgency,
   QualifyResult,
   QuoteItemInput,
+  UserSummary,
   clearToken,
   createLead,
   createQuote,
   getLeads,
   getToken,
+  getUsers,
   qualifyLead,
   updateLeadStatus,
   UnauthorizedError,
@@ -35,11 +37,6 @@ import {
 
 const STATUSES: LeadStatus[] = ["New", "Qualified", "Quoted", "Approved"];
 const SOURCES = ["Website", "Referral", "Social Media", "Email Campaign", "SEO"];
-const REPS = [
-  { id: 1, name: "Ayeza" },
-  { id: 2, name: "Momin" },
-  { id: 3, name: "Sara" },
-];
 
 const STATUS_STYLES: Record<LeadStatus, string> = {
   New: "bg-blue-500/10 text-blue-300 ring-1 ring-inset ring-blue-500/20",
@@ -68,6 +65,7 @@ const TABLE_COLUMNS = [
   "Contact",
   "Email",
   "Phone",
+  "Assigned Rep",
   "Source",
   "Product",
   "Value",
@@ -214,6 +212,7 @@ export default function LeadsPage() {
   const [linkEmail, setLinkEmail] = useState("");
   const [linkSubmitting, setLinkSubmitting] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [reps, setReps] = useState<UserSummary[]>([]);
 
   useEffect(() => {
     if (!getToken()) {
@@ -221,6 +220,7 @@ export default function LeadsPage() {
       return;
     }
     loadLeads();
+    loadReps();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -239,6 +239,20 @@ export default function LeadsPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadReps() {
+    try {
+      const data = await getUsers("Sales");
+      setReps(data);
+    } catch {
+      // Non-critical: dropdown/column simply show no reps if this fails.
+    }
+  }
+
+  function repName(repId: number | null): string {
+    if (!repId) return "—";
+    return reps.find((r) => r.user_id === repId)?.full_name ?? "—";
   }
 
   function handleLogout() {
@@ -505,6 +519,7 @@ export default function LeadsPage() {
                           <td className="px-4 py-3.5 text-slate-300">{lead.contact_person || "—"}</td>
                           <td className="px-4 py-3.5 text-slate-300">{lead.email || "—"}</td>
                           <td className="px-4 py-3.5 text-slate-300">{lead.phone || "—"}</td>
+                          <td className="px-4 py-3.5 text-slate-300">{repName(lead.assigned_rep_id)}</td>
                           <td className="px-4 py-3.5 text-slate-300">{lead.lead_source || "—"}</td>
                           <td className="px-4 py-3.5 text-slate-300">{lead.requested_product || "—"}</td>
                           <td className="px-4 py-3.5 text-slate-300">{formatNumber(lead.expected_order_value)}</td>
@@ -728,9 +743,9 @@ export default function LeadsPage() {
                     className={inputClass}
                   >
                     <option value="">Unassigned</option>
-                    {REPS.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.name}
+                    {reps.map((r) => (
+                      <option key={r.user_id} value={r.user_id}>
+                        {r.full_name}
                       </option>
                     ))}
                   </select>

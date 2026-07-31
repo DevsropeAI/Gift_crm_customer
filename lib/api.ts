@@ -64,8 +64,10 @@ export function clearToken(): void {
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getToken();
+  const isFormData = options.body instanceof FormData;
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    // Omit Content-Type for FormData — the browser sets it (with the correct multipart boundary).
+    ...(isFormData ? {} : { "Content-Type": "application/json" }),
     ...(options.headers as Record<string, string> | undefined),
   };
   if (token) {
@@ -123,6 +125,16 @@ export async function updateLeadStatus(leadId: number, status: LeadStatus): Prom
     method: "PATCH",
     body: JSON.stringify({ status }),
   });
+}
+
+export interface UserSummary {
+  user_id: number;
+  full_name: string;
+}
+
+export async function getUsers(role?: string): Promise<UserSummary[]> {
+  const query = role ? `?role=${encodeURIComponent(role)}` : "";
+  return request<UserSummary[]>(`/users${query}`);
 }
 
 export type LeadUrgency = "High" | "Medium" | "Low";
@@ -319,10 +331,12 @@ export async function getOrderProofs(orderId: number): Promise<Proof[]> {
   return request<Proof[]>(`/orders/${orderId}/proofs`);
 }
 
-export async function uploadProof(orderId: number, fileUrl: string): Promise<Proof> {
+export async function uploadProof(orderId: number, file: File): Promise<Proof> {
+  const formData = new FormData();
+  formData.append("file", file);
   return request<Proof>(`/orders/${orderId}/proofs`, {
     method: "POST",
-    body: JSON.stringify({ file_url: fileUrl }),
+    body: formData,
   });
 }
 
@@ -330,6 +344,31 @@ export async function sendProofToCustomer(proofId: number): Promise<Proof> {
   return request<Proof>(`/proofs/${proofId}/status`, {
     method: "PATCH",
   });
+}
+
+export async function downloadProofFile(proofId: number): Promise<Blob> {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/proofs/${proofId}/file`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (res.status === 401) {
+    clearToken();
+    throw new UnauthorizedError();
+  }
+
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      // response had no JSON body
+    }
+    throw new ApiError(detail, res.status);
+  }
+
+  return res.blob();
 }
 
 export interface CustomerProof {
@@ -360,4 +399,125 @@ export async function requestProofRevision(proofId: number, comment: string): Pr
     method: "PATCH",
     body: JSON.stringify({ comment }),
   });
+}
+
+export type InvoiceStatus = "Draft" | "Sent" | "Paid" | "Overdue";
+
+export interface Invoice {
+  invoice_id: number;
+  order_id: number;
+  company_name: string;
+  amount: number;
+  status: InvoiceStatus;
+  due_date: string | null;
+  paid_at: string | null;
+  payment_reference: string | null;
+  receipt_file_url: string | null;
+  customer_payment_reference: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface CreateInvoiceInput {
+  order_id: number;
+  due_date: string;
+}
+
+export interface OrderQuoteAmount {
+  order_id: number;
+  company_name: string;
+  amount: number;
+}
+
+export async function getOrderQuoteAmount(orderId: number): Promise<OrderQuoteAmount> {
+  return request<OrderQuoteAmount>(`/orders/${orderId}/quote-amount`);
+}
+
+export async function getInvoices(): Promise<Invoice[]> {
+  return request<Invoice[]>("/invoices");
+}
+
+export async function createInvoice(input: CreateInvoiceInput): Promise<Invoice> {
+  return request<Invoice>("/invoices", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateInvoiceStatus(
+  invoiceId: number,
+  status: InvoiceStatus,
+  paymentReference?: string
+): Promise<Invoice> {
+  return request<Invoice>(`/invoices/${invoiceId}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status, payment_reference: paymentReference }),
+  });
+}
+
+export async function getOrderInvoice(orderId: number): Promise<Invoice> {
+  return request<Invoice>(`/orders/${orderId}/invoice`);
+}
+
+export async function uploadInvoiceReceipt(
+  invoiceId: number,
+  file: File,
+  paymentReference: string
+): Promise<Invoice> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("payment_reference", paymentReference);
+  return request<Invoice>(`/my/invoices/${invoiceId}/receipt`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export async function downloadInvoiceReceipt(invoiceId: number): Promise<Blob> {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/receipt`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (res.status === 401) {
+    clearToken();
+    throw new UnauthorizedError();
+  }
+
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      // response had no JSON body
+    }
+    throw new ApiError(detail, res.status);
+  }
+
+  return res.blob();
+}
+
+export interface PaymentInstructions {
+  bank_name: string;
+  account_title: string;
+  account_number: string;
+  iban: string;
+  note: string;
+}
+
+export async function getPaymentInstructions(): Promise<PaymentInstructions> {
+  return request<PaymentInstructions>("/payment-instructions");
+}
+
+export interface CustomerOrder {
+  order_id: number;
+  lead_id: number;
+  company_name: string;
+  production_stage: string;
+  created_at: string | null;
+}
+
+export async function getMyOrders(): Promise<CustomerOrder[]> {
+  return request<CustomerOrder[]>("/my/orders");
 }

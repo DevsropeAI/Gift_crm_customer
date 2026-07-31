@@ -17,6 +17,9 @@
 /.next/
 /out/
 
+# leftover corrupted Turbopack cache folder from local troubleshooting — never commit this
+.next_broken/
+
 # production
 /build
 

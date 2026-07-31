@@ -30,6 +30,8 @@ export default function LoginPage() {
         router.push("/portal");
       } else if (role === "Production") {
         router.push("/production");
+      } else if (role === "Finance") {
+        router.push("/finance");
       } else {
         router.push("/leads");
       }
